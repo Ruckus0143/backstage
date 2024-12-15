@@ -14,26 +14,26 @@
  * limitations under the License.
  */
 
-import { createElement } from 'react';
+import { createElement, forwardRef } from 'react';
 import { boxSprinkles } from './sprinkles.css';
-import { base } from './box.css';
 import { BoxProps } from './types';
 
 /** @public */
-export const Box = (props: BoxProps) => {
+export const Box = forwardRef<HTMLDivElement, BoxProps>((props, ref) => {
   const { as = 'div', className, style, children, ...restProps } = props;
 
   // Generate the list of class names
   const sprinklesClassName = boxSprinkles(restProps);
 
   // Combine the base class name, the sprinkles class name, and any additional class names
-  const classNames = [base, sprinklesClassName, className]
+  const classNames = ['box', sprinklesClassName, className]
     .filter(Boolean)
     .join(' ');
 
   return createElement(as, {
+    ref,
     className: classNames,
     style,
     children,
   });
-};
+});

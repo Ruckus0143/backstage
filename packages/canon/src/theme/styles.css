@@ -26,3 +26,6 @@
 @import '../components/Stack/styles.css';
 @import '../components/Inline/styles.css';
 @import '../components/Grid/styles.css';
+@import '../components/Container/styles.css';
+@import '../components/Icon/styles.css';
+@import '../components/Checkbox/styles.css';
