@@ -43,7 +43,6 @@ import { LocationService, RefreshService } from './types';
 import {
   disallowReadonlyMode,
   encodeCursor,
-  expandLegacyCompoundRelationsInEntity,
   locationInput,
   validateRequestBody,
 } from './util';
@@ -60,7 +59,6 @@ import { LocationAnalyzer } from '@backstage/plugin-catalog-node';
 import { AuthorizedValidationService } from './AuthorizedValidationService';
 import {
   createEntityArrayJsonStream,
-  processEntitiesResponseItems,
   writeEntitiesResponse,
   writeSingleEntityResponse,
 } from './response';
@@ -153,7 +151,7 @@ export async function createRouter(
         // When pagination parameters are passed in, use the legacy slow path
         // that loads all entities into memory
 
-        if (pagination) {
+        if (pagination || disableRelationsCompatibility !== true) {
           const { entities, pageInfo } = await entitiesCatalog.entities({
             filter,
             fields,
@@ -170,7 +168,11 @@ export async function createRouter(
             res.setHeader('link', `<${url.pathname}${url.search}>; rel="next"`);
           }
 
-          await writeEntitiesResponse(res, entities);
+          await writeEntitiesResponse({
+            res,
+            items: entities,
+            alwaysUseObjectMode: !disableRelationsCompatibility,
+          });
           return;
         }
 
@@ -179,6 +181,7 @@ export async function createRouter(
         let cursor: Cursor | undefined;
 
         try {
+          let currentWrite: Promise<boolean> | undefined = undefined;
           do {
             const result = await entitiesCatalog.queryEntities(
               !cursor
@@ -193,20 +196,20 @@ export async function createRouter(
                 : { credentials, fields, limit, cursor },
             );
 
+            // Wait for previous write to complete
+            if (await currentWrite) {
+              return; // Client closed connection
+            }
+
             if (result.items.entities.length) {
-              if (!disableRelationsCompatibility) {
-                result.items = processEntitiesResponseItems(
-                  result.items,
-                  expandLegacyCompoundRelationsInEntity,
-                );
-              }
-              if (await responseStream.send(result.items)) {
-                return; // Client closed connection
-              }
+              currentWrite = responseStream.send(result.items);
             }
 
             cursor = result.pageInfo?.nextCursor;
           } while (cursor);
+
+          // Wait for last write to complete
+          await currentWrite;
 
           responseStream.complete();
         } finally {
@@ -222,18 +225,23 @@ export async function createRouter(
             credentials: await httpAuth.credentials(req),
           });
 
-        await writeEntitiesResponse(res, items, entities => ({
-          items: entities,
-          totalItems,
-          pageInfo: {
-            ...(pageInfo.nextCursor && {
-              nextCursor: encodeCursor(pageInfo.nextCursor),
-            }),
-            ...(pageInfo.prevCursor && {
-              prevCursor: encodeCursor(pageInfo.prevCursor),
-            }),
-          },
-        }));
+        await writeEntitiesResponse({
+          res,
+          items,
+          alwaysUseObjectMode: !disableRelationsCompatibility,
+          responseWrapper: entities => ({
+            items: entities,
+            totalItems,
+            pageInfo: {
+              ...(pageInfo.nextCursor && {
+                nextCursor: encodeCursor(pageInfo.nextCursor),
+              }),
+              ...(pageInfo.prevCursor && {
+                prevCursor: encodeCursor(pageInfo.prevCursor),
+              }),
+            },
+          }),
+        });
       })
       .get('/entities/by-uid/:uid', async (req, res) => {
         const { uid } = req.params;
@@ -281,9 +289,14 @@ export async function createRouter(
           fields: parseEntityTransformParams(req.query, request.fields),
           credentials: await httpAuth.credentials(req),
         });
-        await writeEntitiesResponse(res, items, entities => ({
-          items: entities,
-        }));
+        await writeEntitiesResponse({
+          res,
+          items,
+          alwaysUseObjectMode: !disableRelationsCompatibility,
+          responseWrapper: entities => ({
+            items: entities,
+          }),
+        });
       })
       .get('/entity-facets', async (req, res) => {
         const response = await entitiesCatalog.facets({
